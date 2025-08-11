@@ -558,7 +558,7 @@ app.get('/api/v1/rides/pending', authenticateToken, async (req, res) => {
     const pendingRides = await Ride.find({
       status: 'PENDING',
       driver: null
-    }).sort({ createdAt: 1 }); // Oldest first
+    }).sort({ created_at: 1 }); // Oldest first
     
     res.json({
       success: true,
