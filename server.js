@@ -415,6 +415,78 @@ app.get('/api/v1/rides/:rideId/driver-location', authenticateToken, async (req, 
 });
 
 // Driver APIs (for driver app)
+
+// Driver registration
+app.post('/api/v1/drivers/register', [
+  body('name').notEmpty().trim(),
+  body('phone').isMobilePhone(),
+  body('email').isEmail(),
+  body('vehicleType').notEmpty().trim(),
+  body('vehicleNumber').notEmpty().trim(),
+  body('licenseNumber').notEmpty().trim()
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ success: false, error: 'Validation failed', details: errors.array() });
+    }
+    
+    const { name, phone, email, vehicleType, vehicleNumber, licenseNumber } = req.body;
+    
+    // Check if driver exists
+    const existingDriver = await Driver.findOne({ $or: [{ phone }, { email }] });
+    if (existingDriver) {
+      return res.status(409).json({ success: false, error: 'Driver already exists' });
+    }
+    
+    const driver = new Driver({
+      name,
+      phone,
+      email,
+      vehicle: {
+        type: vehicleType,
+        number: vehicleNumber,
+        model: vehicleType
+      },
+      license_number: licenseNumber,
+      status: 'offline',
+      rating: 5.0,
+      location: { latitude: 0, longitude: 0, lastUpdated: new Date() }
+    });
+    
+    await driver.save();
+    const token = generateToken(driver._id);
+    
+    res.status(201).json({
+      success: true,
+      data: { driver, token },
+      message: 'Driver registered successfully'
+    });
+  } catch (error) {
+    console.error('Driver registration error:', error);
+    res.status(500).json({ success: false, error: 'Driver registration failed' });
+  }
+});
+
+// Driver profile
+app.get('/api/v1/drivers/profile', authenticateToken, async (req, res) => {
+  try {
+    const driver = await Driver.findById(req.userId);
+    if (!driver) {
+      return res.status(404).json({ success: false, error: 'Driver not found' });
+    }
+    
+    res.json({
+      success: true,
+      data: driver
+    });
+  } catch (error) {
+    console.error('Error fetching driver profile:', error);
+    res.status(500).json({ success: false, error: 'Failed to fetch driver profile' });
+  }
+});
+
+// Update driver status and location
 app.put('/api/v1/drivers/status', authenticateToken, async (req, res) => {
   try {
     const { status, latitude, longitude } = req.body;
@@ -436,6 +508,333 @@ app.put('/api/v1/drivers/status', authenticateToken, async (req, res) => {
   } catch (error) {
     console.error('Error updating driver status:', error);
     res.status(500).json({ success: false, error: 'Failed to update driver status' });
+  }
+});
+
+// Get pending rides for driver
+app.get('/api/v1/rides/pending', authenticateToken, async (req, res) => {
+  try {
+    // Get rides that are pending and don't have a driver assigned
+    const pendingRides = await Ride.find({
+      status: 'PENDING',
+      driver: null
+    }).sort({ createdAt: 1 }); // Oldest first
+    
+    res.json({
+      success: true,
+      data: pendingRides,
+      message: `Found ${pendingRides.length} pending rides`
+    });
+  } catch (error) {
+    console.error('Error fetching pending rides:', error);
+    res.status(500).json({ success: false, error: 'Failed to fetch pending rides' });
+  }
+});
+
+// Accept a ride
+app.put('/api/v1/rides/:rideId/accept', authenticateToken, async (req, res) => {
+  try {
+    const { rideId } = req.params;
+    
+    // Find the driver
+    const driver = await Driver.findById(req.userId);
+    if (!driver) {
+      return res.status(404).json({ success: false, error: 'Driver not found' });
+    }
+    
+    if (driver.status !== 'online') {
+      return res.status(400).json({ success: false, error: 'Driver must be online to accept rides' });
+    }
+    
+    if (driver.current_ride) {
+      return res.status(400).json({ success: false, error: 'Driver already has an active ride' });
+    }
+    
+    // Find and update the ride
+    const ride = await Ride.findById(rideId);
+    if (!ride) {
+      return res.status(404).json({ success: false, error: 'Ride not found' });
+    }
+    
+    if (ride.status !== 'PENDING') {
+      return res.status(400).json({ success: false, error: 'Ride is no longer available' });
+    }
+    
+    if (ride.driver) {
+      return res.status(400).json({ success: false, error: 'Ride already assigned to another driver' });
+    }
+    
+    // Assign driver to ride
+    const driverInfo = {
+      id: driver._id,
+      name: driver.name,
+      phone: driver.phone,
+      rating: driver.rating,
+      vehicle: driver.vehicle,
+      current_location: driver.location
+    };
+    
+    ride.driver = driverInfo;
+    ride.status = 'DRIVER_ASSIGNED';
+    ride.estimated_arrival = new Date(Date.now() + 10 * 60000); // 10 minutes from now
+    
+    // Update driver status
+    driver.current_ride = rideId;
+    
+    await Promise.all([ride.save(), driver.save()]);
+    
+    // Emit real-time update to passenger
+    io.emit('ride_update', { ride_id: rideId, ride });
+    
+    res.json({
+      success: true,
+      data: ride,
+      message: 'Ride accepted successfully'
+    });
+  } catch (error) {
+    console.error('Error accepting ride:', error);
+    res.status(500).json({ success: false, error: 'Failed to accept ride' });
+  }
+});
+
+// Reject a ride
+app.put('/api/v1/rides/:rideId/reject', authenticateToken, async (req, res) => {
+  try {
+    const { rideId } = req.params;
+    
+    // Just log the rejection - ride remains available for other drivers
+    console.log(`Driver ${req.userId} rejected ride ${rideId}`);
+    
+    res.json({
+      success: true,
+      message: 'Ride rejected'
+    });
+  } catch (error) {
+    console.error('Error rejecting ride:', error);
+    res.status(500).json({ success: false, error: 'Failed to reject ride' });
+  }
+});
+
+// Start a ride (driver has picked up passenger)
+app.put('/api/v1/rides/:rideId/start', authenticateToken, async (req, res) => {
+  try {
+    const { rideId } = req.params;
+    
+    const ride = await Ride.findById(rideId);
+    if (!ride) {
+      return res.status(404).json({ success: false, error: 'Ride not found' });
+    }
+    
+    if (ride.driver?.id !== req.userId) {
+      return res.status(403).json({ success: false, error: 'Not authorized for this ride' });
+    }
+    
+    if (ride.status !== 'DRIVER_ASSIGNED') {
+      return res.status(400).json({ success: false, error: 'Invalid ride status for starting' });
+    }
+    
+    ride.status = 'IN_PROGRESS';
+    ride.start_time = new Date();
+    await ride.save();
+    
+    // Emit real-time update
+    io.emit('ride_update', { ride_id: rideId, ride });
+    
+    res.json({
+      success: true,
+      data: ride,
+      message: 'Ride started successfully'
+    });
+  } catch (error) {
+    console.error('Error starting ride:', error);
+    res.status(500).json({ success: false, error: 'Failed to start ride' });
+  }
+});
+
+// Complete a ride
+app.put('/api/v1/rides/:rideId/complete', authenticateToken, async (req, res) => {
+  try {
+    const { rideId } = req.params;
+    
+    const ride = await Ride.findById(rideId);
+    if (!ride) {
+      return res.status(404).json({ success: false, error: 'Ride not found' });
+    }
+    
+    if (ride.driver?.id !== req.userId) {
+      return res.status(403).json({ success: false, error: 'Not authorized for this ride' });
+    }
+    
+    if (ride.status !== 'IN_PROGRESS') {
+      return res.status(400).json({ success: false, error: 'Invalid ride status for completion' });
+    }
+    
+    ride.status = 'COMPLETED';
+    ride.end_time = new Date();
+    await ride.save();
+    
+    // Free up the driver
+    const driver = await Driver.findById(req.userId);
+    if (driver) {
+      driver.current_ride = null;
+      await driver.save();
+    }
+    
+    // Emit real-time update
+    io.emit('ride_update', { ride_id: rideId, ride });
+    
+    res.json({
+      success: true,
+      data: ride,
+      message: 'Ride completed successfully'
+    });
+  } catch (error) {
+    console.error('Error completing ride:', error);
+    res.status(500).json({ success: false, error: 'Failed to complete ride' });
+  }
+});
+
+// Pool request management for drivers
+app.get('/api/v1/pools/requests', authenticateToken, async (req, res) => {
+  try {
+    // Get pool requests for the current driver
+    const driver = await Driver.findById(req.userId);
+    if (!driver) {
+      return res.status(404).json({ success: false, error: 'Driver not found' });
+    }
+    
+    if (!driver.current_ride) {
+      return res.json({
+        success: true,
+        data: [],
+        message: 'No active ride for pool requests'
+      });
+    }
+    
+    // Get pending pool requests for current ride
+    const poolRequests = await Pool.find({
+      poolId: driver.current_ride,
+      status: 'PENDING'
+    }).sort({ createdAt: 1 });
+    
+    res.json({
+      success: true,
+      data: poolRequests,
+      message: `Found ${poolRequests.length} pool requests`
+    });
+  } catch (error) {
+    console.error('Error fetching pool requests:', error);
+    res.status(500).json({ success: false, error: 'Failed to fetch pool requests' });
+  }
+});
+
+// Accept pool request
+app.put('/api/v1/pools/requests/:requestId/accept', authenticateToken, async (req, res) => {
+  try {
+    const { requestId } = req.params;
+    
+    const driver = await Driver.findById(req.userId);
+    if (!driver) {
+      return res.status(404).json({ success: false, error: 'Driver not found' });
+    }
+    
+    if (!driver.current_ride) {
+      return res.status(400).json({ success: false, error: 'No active ride to add pool passenger' });
+    }
+    
+    // Find the pool request
+    const poolRequest = await Pool.findById(requestId);
+    if (!poolRequest) {
+      return res.status(404).json({ success: false, error: 'Pool request not found' });
+    }
+    
+    if (poolRequest.status !== 'PENDING') {
+      return res.status(400).json({ success: false, error: 'Pool request is no longer pending' });
+    }
+    
+    // Find the current ride
+    const ride = await Ride.findById(driver.current_ride);
+    if (!ride) {
+      return res.status(404).json({ success: false, error: 'Current ride not found' });
+    }
+    
+    // Check if there's room for more passengers
+    const currentPassengerCount = 1 + (ride.pool_passengers ? ride.pool_passengers.length : 0);
+    if (currentPassengerCount >= 3) { // Max 3 passengers total
+      return res.status(400).json({ success: false, error: 'Ride is full' });
+    }
+    
+    // Add passenger to ride
+    const poolPassenger = {
+      user_id: poolRequest.userId,
+      pickup_location: poolRequest.pickup_location,
+      destination_location: poolRequest.destination_location,
+      departure_time: poolRequest.departure_time,
+      accepted_at: new Date()
+    };
+    
+    if (!ride.pool_passengers) {
+      ride.pool_passengers = [];
+    }
+    ride.pool_passengers.push(poolPassenger);
+    
+    // Update pool request status
+    poolRequest.status = 'ACCEPTED';
+    poolRequest.accepted_at = new Date();
+    
+    await Promise.all([ride.save(), poolRequest.save()]);
+    
+    // Emit real-time updates
+    io.emit('pool_request_response', {
+      requestId: requestId,
+      status: 'ACCEPTED',
+      rideDetails: ride
+    });
+    
+    res.json({
+      success: true,
+      data: {
+        requestId: requestId,
+        status: 'ACCEPTED',
+        message: 'Pool request accepted',
+        rideDetails: ride
+      },
+      message: 'Pool passenger added successfully'
+    });
+  } catch (error) {
+    console.error('Error accepting pool request:', error);
+    res.status(500).json({ success: false, error: 'Failed to accept pool request' });
+  }
+});
+
+// Reject pool request
+app.put('/api/v1/pools/requests/:requestId/reject', authenticateToken, async (req, res) => {
+  try {
+    const { requestId } = req.params;
+    
+    const poolRequest = await Pool.findById(requestId);
+    if (!poolRequest) {
+      return res.status(404).json({ success: false, error: 'Pool request not found' });
+    }
+    
+    poolRequest.status = 'REJECTED';
+    poolRequest.rejected_at = new Date();
+    await poolRequest.save();
+    
+    // Emit real-time update
+    io.emit('pool_request_response', {
+      requestId: requestId,
+      status: 'REJECTED',
+      message: 'Pool request rejected by driver'
+    });
+    
+    res.json({
+      success: true,
+      message: 'Pool request rejected'
+    });
+  } catch (error) {
+    console.error('Error rejecting pool request:', error);
+    res.status(500).json({ success: false, error: 'Failed to reject pool request' });
   }
 });
 
