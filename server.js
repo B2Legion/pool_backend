@@ -118,7 +118,7 @@ app.post('/api/v1/auth/register', [
   }
 });
 
-// Simple login with name only (for testing)
+// Unified login for both users and drivers (for testing)
 app.post('/api/v1/auth/login', [
   body('name').notEmpty().trim()
 ], async (req, res) => {
@@ -130,27 +130,63 @@ app.post('/api/v1/auth/login', [
     
     const { name } = req.body;
     
-    // Find existing user or create new one
-    let user = await User.findOne({ name });
+    // Check User-Agent or a header to determine if this is a driver app request
+    const userAgent = req.headers['user-agent'] || '';
+    const platform = req.headers['x-platform'] || '';
+    const isDriverRequest = platform === 'Android-Driver' || userAgent.includes('Driver');
     
-    if (!user) {
-      user = new User({
-        name,
-        phone: '+91' + Math.floor(Math.random() * 9000000000 + 1000000000),
-        email: name.toLowerCase().replace(/\s+/g, '') + '@test.com',
-        gender: 'other',
-        rating: 5.0
+    if (isDriverRequest) {
+      // Handle driver login
+      let driver = await Driver.findOne({ name });
+      
+      if (!driver) {
+        driver = new Driver({
+          name,
+          phone: '+91' + Math.floor(Math.random() * 9000000000 + 1000000000),
+          email: name.toLowerCase().replace(/\s+/g, '') + '@driver.test.com',
+          vehicle: {
+            type: 'Sedan',
+            number: 'KA' + Math.floor(Math.random() * 100) + 'AB' + Math.floor(Math.random() * 10000),
+            model: 'Swift Dzire'
+          },
+          license_number: 'DL' + Math.floor(Math.random() * 1000000000),
+          status: 'offline',
+          rating: 5.0,
+          location: { latitude: 0, longitude: 0, lastUpdated: new Date() }
+        });
+        await driver.save();
+      }
+      
+      const token = generateToken(driver._id);
+      
+      res.json({
+        success: true,
+        data: { driver, token },
+        message: 'Driver login successful'
       });
-      await user.save();
+    } else {
+      // Handle user login
+      let user = await User.findOne({ name });
+      
+      if (!user) {
+        user = new User({
+          name,
+          phone: '+91' + Math.floor(Math.random() * 9000000000 + 1000000000),
+          email: name.toLowerCase().replace(/\s+/g, '') + '@test.com',
+          gender: 'other',
+          rating: 5.0
+        });
+        await user.save();
+      }
+      
+      const token = generateToken(user._id);
+      
+      res.json({
+        success: true,
+        data: { user, token },
+        message: 'User login successful'
+      });
     }
-    
-    const token = generateToken(user._id);
-    
-    res.json({
-      success: true,
-      data: { user, token },
-      message: 'Login successful'
-    });
   } catch (error) {
     console.error('Login error:', error);
     res.status(500).json({ success: false, error: 'Login failed' });
