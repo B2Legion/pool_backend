@@ -211,7 +211,7 @@ app.post('/api/v1/rides', authenticateToken, [
   try {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      return res.status(400).json({ success: false, error: 'Validation failed' });
+      return res.status(400).json({ success: false, error: 'Validation failed', details: errors.array() });
     }
     
     const {
@@ -263,7 +263,7 @@ app.post('/api/v1/rides', authenticateToken, [
   //         phone: assignment.driver.phone || '+91 9876543210',
   //         rating: assignment.driver.rating,
   //         vehicle: assignment.driver.vehicle,
-  //         current_location: assignment.driver.location
+  //         current_location: driver.location
   //       };
         
   //       ride.driver = driver;
