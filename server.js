@@ -241,58 +241,58 @@ app.post('/api/v1/rides', authenticateToken, [
     await ride.save();
   
   // Use matching service to find and assign driver
-  setTimeout(async () => {
-    try {
-      // Get available drivers
-      const availableDrivers = await Driver.find({ status: 'online', current_ride: null });
+  // setTimeout(async () => {
+  //   try {
+  //     // Get available drivers
+  //     const availableDrivers = await Driver.find({ status: 'online', current_ride: null });
       
-      if (availableDrivers.length === 0) {
-        ride.status = 'NO_DRIVERS_AVAILABLE';
-        await ride.save();
-        io.emit('ride_update', { ride_id: ride._id, ride });
-        return;
-      }
+  //     if (availableDrivers.length === 0) {
+  //       ride.status = 'NO_DRIVERS_AVAILABLE';
+  //       await ride.save();
+  //       io.emit('ride_update', { ride_id: ride._id, ride });
+  //       return;
+  //     }
       
-      // Assign optimal driver
-      const assignment = await matchingService.assignOptimalDriver(ride, availableDrivers);
+  //     // Assign optimal driver
+  //     const assignment = await matchingService.assignOptimalDriver(ride, availableDrivers);
       
-      if (assignment) {
-        const driver = {
-          id: assignment.driver.id,
-          name: assignment.driver.name,
-          phone: assignment.driver.phone || '+91 9876543210',
-          rating: assignment.driver.rating,
-          vehicle: assignment.driver.vehicle,
-          current_location: assignment.driver.location
-        };
+  //     if (assignment) {
+  //       const driver = {
+  //         id: assignment.driver.id,
+  //         name: assignment.driver.name,
+  //         phone: assignment.driver.phone || '+91 9876543210',
+  //         rating: assignment.driver.rating,
+  //         vehicle: assignment.driver.vehicle,
+  //         current_location: assignment.driver.location
+  //       };
         
-        ride.driver = driver;
-        ride.status = 'DRIVER_ASSIGNED';
-        ride.estimated_arrival = assignment.estimatedArrival;
+  //       ride.driver = driver;
+  //       ride.status = 'DRIVER_ASSIGNED';
+  //       ride.estimated_arrival = assignment.estimatedArrival;
         
-        // Store driver location for tracking
-        driverLocations[driver.id] = {
-          latitude: driver.current_location.latitude,
-          longitude: driver.current_location.longitude,
-          lastUpdated: new Date().toISOString(),
-          bearing: 0,
-          status: 'en_route'
-        };
+  //       // Store driver location for tracking
+  //       driverLocations[driver.id] = {
+  //         latitude: driver.current_location.latitude,
+  //         longitude: driver.current_location.longitude,
+  //         lastUpdated: new Date().toISOString(),
+  //         bearing: 0,
+  //         status: 'en_route'
+  //       };
         
-        // Mark driver as busy
-        await Driver.findByIdAndUpdate(driver.id, { current_ride: ride._id });
-        await ride.save();
+  //       // Mark driver as busy
+  //       await Driver.findByIdAndUpdate(driver.id, { current_ride: ride._id });
+  //       await ride.save();
         
-        // Emit real-time update
-        io.emit('ride_update', { ride_id: ride._id, ride });
-      }
-    } catch (error) {
-      console.error('Error assigning driver:', error);
-      ride.status = 'NO_DRIVERS_AVAILABLE';
-      await ride.save();
-      io.emit('ride_update', { ride_id: ride._id, ride });
-    }
-  }, 2000);
+  //       // Emit real-time update
+  //       io.emit('ride_update', { ride_id: ride._id, ride });
+  //     }
+  //   } catch (error) {
+  //     console.error('Error assigning driver:', error);
+  //     ride.status = 'NO_DRIVERS_AVAILABLE';
+  //     await ride.save();
+  //     io.emit('ride_update', { ride_id: ride._id, ride });
+  //   }
+  // }, 2000);
   
     res.status(201).json({
       success: true,
