@@ -13,13 +13,17 @@ const Driver = require('./models/Driver');
 const Ride = require('./models/Ride');
 const Pool = require('./models/Pool');
 
-// Connect to MongoDB
-mongoose.connect(process.env.MONGODB_URI)
-  .then(() => console.log('🍃 Connected to MongoDB'))
-  .catch(err => {
-    console.error('❌ MongoDB connection error:', err);
-    process.exit(1);
-  });
+// Connect to MongoDB (skip for testing if not available)
+if (process.env.MONGODB_URI && process.env.MONGODB_URI !== 'mongodb://localhost:27017/poolride') {
+  mongoose.connect(process.env.MONGODB_URI)
+    .then(() => console.log('🍃 Connected to MongoDB'))
+    .catch(err => {
+      console.error('❌ MongoDB connection error:', err);
+      process.exit(1);
+    });
+} else {
+  console.log('🧪 Running in test mode without MongoDB');
+}
 
 const app = express();
 const http = require('http').createServer(app);
