@@ -601,6 +601,7 @@ app.put('/api/v1/rides/:rideId/accept', authenticateToken, async (req, res) => {
       return res.status(400).json({ success: false, error: 'Ride is no longer available' });
     }
     
+    console.log('ride.driver:', ride.driver);
     if (ride.driver) {
       return res.status(400).json({ success: false, error: 'Ride already assigned to another driver' });
     }
