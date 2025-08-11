@@ -305,6 +305,26 @@ app.post('/api/v1/rides', authenticateToken, [
   }
 });
 
+// Get pending rides for driver
+app.get('/api/v1/rides/pending', authenticateToken, async (req, res) => {
+  try {
+    // Get rides that are pending and don't have a driver assigned
+    const pendingRides = await Ride.find({
+      status: 'PENDING',
+      driver: null
+    }).sort({ created_at: 1 }); // Oldest first
+    
+    res.json({
+      success: true,
+      data: pendingRides,
+      message: `Found ${pendingRides.length} pending rides`
+    });
+  } catch (error) {
+    console.error('Error fetching pending rides:', error);
+    res.status(500).json({ success: false, error: 'Failed to fetch pending rides' });
+  }
+});
+
 app.get('/api/v1/rides/:rideId', authenticateToken, async (req, res) => {
   try {
     const ride = await Ride.findById(req.params.rideId);
@@ -551,25 +571,6 @@ app.put('/api/v1/drivers/status', authenticateToken, async (req, res) => {
   }
 });
 
-// Get pending rides for driver
-app.get('/api/v1/rides/pending', authenticateToken, async (req, res) => {
-  try {
-    // Get rides that are pending and don't have a driver assigned
-    const pendingRides = await Ride.find({
-      status: 'PENDING',
-      driver: null
-    }).sort({ created_at: 1 }); // Oldest first
-    
-    res.json({
-      success: true,
-      data: pendingRides,
-      message: `Found ${pendingRides.length} pending rides`
-    });
-  } catch (error) {
-    console.error('Error fetching pending rides:', error);
-    res.status(500).json({ success: false, error: 'Failed to fetch pending rides' });
-  }
-});
 
 // Accept a ride
 app.put('/api/v1/rides/:rideId/accept', authenticateToken, async (req, res) => {
