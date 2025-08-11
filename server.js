@@ -4,7 +4,22 @@ const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const { body, validationResult } = require('express-validator');
 const MatchingService = require('./services/MatchingService');
+const mongoose = require('mongoose');
 require('dotenv').config();
+
+// Import models
+const User = require('./models/User');
+const Driver = require('./models/Driver');
+const Ride = require('./models/Ride');
+const Pool = require('./models/Pool');
+
+// Connect to MongoDB
+mongoose.connect(process.env.MONGODB_URI)
+  .then(() => console.log('🍃 Connected to MongoDB'))
+  .catch(err => {
+    console.error('❌ MongoDB connection error:', err);
+    process.exit(1);
+  });
 
 const app = express();
 const http = require('http').createServer(app);
@@ -27,11 +42,7 @@ const limiter = rateLimit({
 });
 app.use(limiter);
 
-// Real Database (MongoDB integration required for production)
-let users = [];
-let drivers = [];
-let rides = [];
-let pools = [];
+// Driver locations cache for real-time tracking
 let driverLocations = {};
 
 // Initialize matching service
@@ -70,73 +81,80 @@ app.post('/api/v1/auth/register', [
   body('email').isEmail(),
   body('password').isLength({ min: 6 }),
   body('gender').isIn(['male', 'female', 'other'])
-], (req, res) => {
-  const errors = validationResult(req);
-  if (!errors.isEmpty()) {
-    return res.status(400).json({ success: false, error: 'Validation failed', details: errors.array() });
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ success: false, error: 'Validation failed', details: errors.array() });
+    }
+    
+    const { name, phone, email, password, gender } = req.body;
+    
+    // Check if user exists
+    const existingUser = await User.findOne({ $or: [{ phone }, { email }] });
+    if (existingUser) {
+      return res.status(409).json({ success: false, error: 'User already exists' });
+    }
+    
+    const user = new User({
+      name,
+      phone,
+      email,
+      gender,
+      rating: 5.0
+    });
+    
+    await user.save();
+    const token = generateToken(user._id);
+    
+    res.status(201).json({
+      success: true,
+      data: { user, token },
+      message: 'User registered successfully'
+    });
+  } catch (error) {
+    console.error('Registration error:', error);
+    res.status(500).json({ success: false, error: 'Registration failed' });
   }
-  
-  const { name, phone, email, password, gender } = req.body;
-  
-  // Check if user exists
-  if (users.find(u => u.phone === phone || u.email === email)) {
-    return res.status(409).json({ success: false, error: 'User already exists' });
-  }
-  
-  const user = {
-    id: generateId(),
-    name,
-    phone,
-    email,
-    gender,
-    rating: 5.0,
-    createdAt: new Date().toISOString()
-  };
-  
-  users.push(user);
-  const token = generateToken(user.id);
-  
-  res.status(201).json({
-    success: true,
-    data: { user, token },
-    message: 'User registered successfully'
-  });
 });
 
 // Simple login with name only (for testing)
 app.post('/api/v1/auth/login', [
   body('name').notEmpty().trim()
-], (req, res) => {
-  const errors = validationResult(req);
-  if (!errors.isEmpty()) {
-    return res.status(400).json({ success: false, error: 'Name is required' });
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ success: false, error: 'Name is required' });
+    }
+    
+    const { name } = req.body;
+    
+    // Find existing user or create new one
+    let user = await User.findOne({ name });
+    
+    if (!user) {
+      user = new User({
+        name,
+        phone: '+91' + Math.floor(Math.random() * 9000000000 + 1000000000),
+        email: name.toLowerCase().replace(/\s+/g, '') + '@test.com',
+        gender: 'other',
+        rating: 5.0
+      });
+      await user.save();
+    }
+    
+    const token = generateToken(user._id);
+    
+    res.json({
+      success: true,
+      data: { user, token },
+      message: 'Login successful'
+    });
+  } catch (error) {
+    console.error('Login error:', error);
+    res.status(500).json({ success: false, error: 'Login failed' });
   }
-  
-  const { name } = req.body;
-  
-  // Find existing user or create new one
-  let user = users.find(u => u.name === name);
-  
-  if (!user) {
-    user = {
-      id: generateId(),
-      name,
-      phone: '+91' + Math.floor(Math.random() * 9000000000 + 1000000000),
-      email: name.toLowerCase().replace(/\s+/g, '') + '@test.com',
-      gender: 'other',
-      rating: 5.0,
-      createdAt: new Date().toISOString()
-    };
-    users.push(user);
-  }
-  
-  const token = generateToken(user.id);
-  
-  res.json({
-    success: true,
-    data: { user, token },
-    message: 'Login successful'
-  });
 });
 
 // Ride Management
@@ -149,49 +167,49 @@ app.post('/api/v1/rides', authenticateToken, [
   body('destination_location.longitude').isFloat(),
   body('departure_time').notEmpty(),
   body('estimated_fare').isInt({ min: 1 })
-], (req, res) => {
-  const errors = validationResult(req);
-  if (!errors.isEmpty()) {
-    return res.status(400).json({ success: false, error: 'Validation failed' });
-  }
-  
-  const {
-    pickup_location,
-    destination_location,
-    departure_time,
-    estimated_fare,
-    allow_pooling,
-    female_only,
-    passenger_count = 1
-  } = req.body;
-  
-  const ride = {
-    ride_id: generateId(),
-    user_id: req.userId,
-    pickup_location,
-    destination_location,
-    departure_time,
-    estimated_fare,
-    allow_pooling: allow_pooling || false,
-    female_only: female_only || false,
-    passenger_count,
-    status: 'PENDING',
-    created_at: new Date().toISOString(),
-    driver: null,
-    pool_passengers: []
-  };
-  
-  rides.push(ride);
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ success: false, error: 'Validation failed' });
+    }
+    
+    const {
+      pickup_location,
+      destination_location,
+      departure_time,
+      estimated_fare,
+      allow_pooling,
+      female_only,
+      passenger_count = 1
+    } = req.body;
+    
+    const ride = new Ride({
+      user_id: req.userId,
+      pickup_location,
+      destination_location,
+      departure_time,
+      estimated_fare,
+      allow_pooling: allow_pooling || false,
+      female_only: female_only || false,
+      passenger_count,
+      status: 'PENDING',
+      driver: null,
+      pool_passengers: []
+    });
+    
+    await ride.save();
   
   // Use matching service to find and assign driver
   setTimeout(async () => {
     try {
       // Get available drivers
-      const availableDrivers = drivers.filter(d => d.status === 'online' && !d.current_ride);
+      const availableDrivers = await Driver.find({ status: 'online', current_ride: null });
       
       if (availableDrivers.length === 0) {
         ride.status = 'NO_DRIVERS_AVAILABLE';
-        io.emit('ride_update', { ride_id: ride.ride_id, ride });
+        await ride.save();
+        io.emit('ride_update', { ride_id: ride._id, ride });
         return;
       }
       
@@ -222,43 +240,51 @@ app.post('/api/v1/rides', authenticateToken, [
         };
         
         // Mark driver as busy
-        const driverIndex = drivers.findIndex(d => d.id === driver.id);
-        if (driverIndex !== -1) {
-          drivers[driverIndex].current_ride = ride.ride_id;
-        }
+        await Driver.findByIdAndUpdate(driver.id, { current_ride: ride._id });
+        await ride.save();
         
         // Emit real-time update
-        io.emit('ride_update', { ride_id: ride.ride_id, ride });
+        io.emit('ride_update', { ride_id: ride._id, ride });
       }
     } catch (error) {
       console.error('Error assigning driver:', error);
       ride.status = 'NO_DRIVERS_AVAILABLE';
-      io.emit('ride_update', { ride_id: ride.ride_id, ride });
+      await ride.save();
+      io.emit('ride_update', { ride_id: ride._id, ride });
     }
   }, 2000);
   
-  res.status(201).json({
-    success: true,
-    data: ride,
-    message: 'Ride booked successfully'
-  });
+    res.status(201).json({
+      success: true,
+      data: ride,
+      message: 'Ride booked successfully'
+    });
+  } catch (error) {
+    console.error('Error creating ride:', error);
+    res.status(500).json({ success: false, error: 'Failed to create ride' });
+  }
 });
 
-app.get('/api/v1/rides/:rideId', authenticateToken, (req, res) => {
-  const ride = rides.find(r => r.ride_id === req.params.rideId);
-  
-  if (!ride) {
-    return res.status(404).json({ success: false, error: 'Ride not found' });
+app.get('/api/v1/rides/:rideId', authenticateToken, async (req, res) => {
+  try {
+    const ride = await Ride.findById(req.params.rideId);
+    
+    if (!ride) {
+      return res.status(404).json({ success: false, error: 'Ride not found' });
+    }
+    
+    if (ride.user_id.toString() !== req.userId) {
+      return res.status(403).json({ success: false, error: 'Access denied' });
+    }
+    
+    res.json({
+      success: true,
+      data: ride
+    });
+  } catch (error) {
+    console.error('Error fetching ride:', error);
+    res.status(500).json({ success: false, error: 'Failed to fetch ride' });
   }
-  
-  if (ride.user_id !== req.userId) {
-    return res.status(403).json({ success: false, error: 'Access denied' });
-  }
-  
-  res.json({
-    success: true,
-    data: ride
-  });
 });
 
 // Pool Management
@@ -286,12 +312,12 @@ app.get('/api/v1/pools/available', authenticateToken, async (req, res) => {
     };
     
     // Get existing rides that allow pooling
-    const existingRides = rides.filter(ride => 
-      ride.allow_pooling && 
-      ride.status === 'DRIVER_ASSIGNED' &&
-      ride.driver &&
-      (!ride.pool_passengers || ride.pool_passengers.length < 3)
-    );
+    const existingRides = await Ride.find({
+      allow_pooling: true,
+      status: 'DRIVER_ASSIGNED',
+      driver: { $ne: null },
+      $expr: { $lt: [{ $size: { $ifNull: ['$pool_passengers', []] } }, 3] }
+    });
     
     // Find compatible pools using matching service
     const availablePools = await matchingService.findAvailablePools(rideRequest, existingRides);
@@ -334,26 +360,33 @@ app.post('/api/v1/pools/:poolId/join', authenticateToken, (req, res) => {
     createdAt: new Date().toISOString()
   };
   
-  // Store the request for driver to respond
-  pools.push(joinRequest);
-  
-  // Emit to driver for real-time response
-  io.emit('pool_request', joinRequest);
-  
-  res.json({
-    success: true,
-    data: joinRequest,
-    message: 'Pool join request sent'
-  });
+  try {
+    // Store the request for driver to respond
+    const poolRequest = new Pool(joinRequest);
+    await poolRequest.save();
+    
+    // Emit to driver for real-time response
+    io.emit('pool_request', joinRequest);
+    
+    res.json({
+      success: true,
+      data: joinRequest,
+      message: 'Pool join request sent'
+    });
+  } catch (error) {
+    console.error('Error creating pool request:', error);
+    res.status(500).json({ success: false, error: 'Failed to create pool request' });
+  }
 });
 
 // Driver Location Tracking
-app.get('/api/v1/rides/:rideId/driver-location', authenticateToken, (req, res) => {
-  const ride = rides.find(r => r.ride_id === req.params.rideId);
-  
-  if (!ride || !ride.driver) {
-    return res.status(404).json({ success: false, error: 'Driver location not available' });
-  }
+app.get('/api/v1/rides/:rideId/driver-location', authenticateToken, async (req, res) => {
+  try {
+    const ride = await Ride.findById(req.params.rideId);
+    
+    if (!ride || !ride.driver) {
+      return res.status(404).json({ success: false, error: 'Driver location not available' });
+    }
   
   let location = driverLocations[ride.driver.id];
   
@@ -365,35 +398,45 @@ app.get('/api/v1/rides/:rideId/driver-location', authenticateToken, (req, res) =
     location.bearing = Math.random() * 360;
   }
   
-  res.json({
-    success: true,
-    data: location || {
-      latitude: ride.pickup_location.latitude + (Math.random() - 0.5) * 0.01,
-      longitude: ride.pickup_location.longitude + (Math.random() - 0.5) * 0.01,
-      lastUpdated: new Date().toISOString(),
-      bearing: 0,
-      status: 'en_route'
-    }
-  });
+    res.json({
+      success: true,
+      data: location || {
+        latitude: ride.pickup_location.latitude + (Math.random() - 0.5) * 0.01,
+        longitude: ride.pickup_location.longitude + (Math.random() - 0.5) * 0.01,
+        lastUpdated: new Date().toISOString(),
+        bearing: 0,
+        status: 'en_route'
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching driver location:', error);
+    res.status(500).json({ success: false, error: 'Failed to fetch driver location' });
+  }
 });
 
 // Driver APIs (for driver app)
-app.put('/api/v1/drivers/status', authenticateToken, (req, res) => {
-  const { status, latitude, longitude } = req.body;
-  
-  let driver = drivers.find(d => d.id === req.userId);
-  if (!driver) {
-    return res.status(404).json({ success: false, error: 'Driver not found' });
+app.put('/api/v1/drivers/status', authenticateToken, async (req, res) => {
+  try {
+    const { status, latitude, longitude } = req.body;
+    
+    const driver = await Driver.findById(req.userId);
+    if (!driver) {
+      return res.status(404).json({ success: false, error: 'Driver not found' });
+    }
+    
+    driver.status = status;
+    driver.location = { latitude, longitude, lastUpdated: new Date() };
+    await driver.save();
+    
+    res.json({
+      success: true,
+      data: driver,
+      message: `Driver status updated to ${status}`
+    });
+  } catch (error) {
+    console.error('Error updating driver status:', error);
+    res.status(500).json({ success: false, error: 'Failed to update driver status' });
   }
-  
-  driver.status = status;
-  driver.location = { latitude, longitude, lastUpdated: new Date().toISOString() };
-  
-  res.json({
-    success: true,
-    data: driver,
-    message: `Driver status updated to ${status}`
-  });
 });
 
 // WebSocket for real-time updates
