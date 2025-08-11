@@ -345,7 +345,7 @@ app.get('/api/v1/pools/available', authenticateToken, async (req, res) => {
   }
 });
 
-app.post('/api/v1/pools/:poolId/join', authenticateToken, (req, res) => {
+app.post('/api/v1/pools/:poolId/join', authenticateToken, async (req, res) => {
   const { poolId } = req.params;
   const { pickup_location, destination_location, departure_time } = req.body;
   
