@@ -602,7 +602,7 @@ app.put('/api/v1/rides/:rideId/accept', authenticateToken, async (req, res) => {
     }
     
     console.log('ride.driver:', ride.driver);
-    if (ride.driver) {
+    if (ride.driver && ride.driver.id) {
       return res.status(400).json({ success: false, error: 'Ride already assigned to another driver' });
     }
     
