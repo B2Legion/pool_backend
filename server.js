@@ -667,6 +667,8 @@ app.put('/api/v1/rides/:rideId/start', authenticateToken, async (req, res) => {
       return res.status(404).json({ success: false, error: 'Ride not found' });
     }
     
+    console.log('ride.driver?.id:', ride.driver?.id);
+    console.log('req.userId:', req.userId);
     if (ride.driver?.id !== req.userId) {
       return res.status(403).json({ success: false, error: 'Not authorized for this ride' });
     }
